@@ -1,2 +1,5 @@
 .env
 *.log
+
+# Certificats/cles generes localement : ne doivent jamais etre commites.
+output/*.pem

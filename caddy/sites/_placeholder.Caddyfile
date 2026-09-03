@@ -1,4 +1,0 @@
-# Fichier vide conserve pour que le motif `import sites/*.Caddyfile` du
-# Caddyfile principal trouve toujours au moins un fichier a importer.
-# Ajoutez vos propres fichiers *.Caddyfile a cote de celui-ci (voir
-# example.Caddyfile.example).

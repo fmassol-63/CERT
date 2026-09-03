@@ -1,119 +1,131 @@
 # CERT
 
-Protection des flux : conteneur qui gère automatiquement des certificats
-HTTPS **gratuits** (Let's Encrypt) pour un ou plusieurs domaines, et bascule
-le trafic HTTP en clair (port 80) vers HTTPS.
+Protection des flux : conteneur qui obtient et renouvelle automatiquement
+des certificats HTTPS **gratuits** (Let's Encrypt) pour un ou plusieurs
+domaines, à charger dans votre **HAProxy** existant.
 
 Cas d'usage initial : [www.printetreste.com](http://www.printetreste.com),
-actuellement servi en HTTP (port 80) sans chiffrement.
+actuellement servi en HTTP (port 80) sans chiffrement, derrière une chaîne
+**HAProxy → NGINX** qui ne fait pour l'instant que du HTTP clair.
 
-## Comment ça marche
+## Architecture
 
-Le dépôt lance un unique conteneur **[Caddy](https://caddyserver.com/)**
-qui joue le rôle de reverse proxy devant votre application :
+```
+Internet ──▶ HAProxy (80/443, autre dépôt/serveur) ──▶ NGINX ──▶ appli
+                  │
+                  │  /.well-known/acme-challenge/*
+                  ▼
+        conteneur acme-challenge (ce dépôt, port 8080)
+                  ▲
+                  │  écrit les fichiers de validation
+        conteneur certbot (ce dépôt)
+                  │
+                  ▼
+        ./output/<domaine>.pem  (cert + clé combinés)
+                  │
+                  ▼  à synchroniser manuellement/par script
+        /etc/haproxy/certs/  sur le serveur HAProxy
+```
 
-- il écoute sur les ports **80** et **443** ;
-- au démarrage (et automatiquement au renouvellement), il obtient un
-  certificat TLS gratuit auprès de **Let's Encrypt** pour chaque domaine
-  déclaré, sans intervention manuelle ;
-- il redirige automatiquement tout le trafic HTTP vers HTTPS ;
-- il relaie (`reverse_proxy`) les requêtes vers votre application, qui
-  continue de tourner en clair en interne — elle n'a rien à changer ;
-- il ajoute des en-têtes de sécurité de base (HSTS, anti-clickjacking, etc).
+Comme HAProxy occupe déjà les ports 80/443, ce dépôt **ne** tente **pas**
+de les écouter lui-même. Il ne fait que :
 
-Pour ajouter d'autres domaines/sous-domaines (chacun avec son propre
-certificat gratuit), il suffit de déposer un fichier dans
-`caddy/sites/` — voir `caddy/sites/example.Caddyfile.example`.
+1. **répondre aux challenges HTTP-01** de Let's Encrypt sur un port
+   interne (`acme-challenge`, 8080 par défaut) — c'est HAProxy qui doit
+   lui relayer les requêtes `/.well-known/acme-challenge/*` ;
+2. **obtenir/renouvelir** les certificats via Certbot ;
+3. **générer un `.pem` combiné** (certificat + clé privée) dans
+   `./output/`, au format attendu par HAProxy (`bind ... ssl crt`).
+
+C'est ensuite HAProxy — dans votre autre dépôt/serveur — qui **termine le
+TLS** en 443 avec ce certificat, puis continue de relayer en HTTP clair
+vers NGINX exactement comme aujourd'hui : **NGINX ne change pas**.
 
 ## Prérequis
 
-- Docker et Docker Compose installés sur le serveur qui héberge
-  `printetreste.com`.
-- Les enregistrements DNS (A / AAAA) de `printetreste.com` et
-  `www.printetreste.com` doivent pointer vers ce serveur.
-- Les ports **80** et **443** doivent être ouverts sur le pare-feu et
-  **libres** (Let's Encrypt valide le domaine via le port 80/443 — si un
-  autre service les occupe déjà, il faut le libérer ou l'arrêter avant de
-  démarrer ce conteneur).
-- Votre application actuelle (celle qui répond en HTTP) doit rester
-  joignable en interne (autre port, autre conteneur, etc.) — ce n'est
-  qu'en façade que le trafic devient HTTPS.
+- Docker et Docker Compose sur le serveur qui héberge ce dépôt (peut être
+  le même serveur que HAProxy, ou un autre — seul le port
+  `ACME_HTTP_PORT` doit être joignable depuis HAProxy).
+- Les enregistrements DNS (A/AAAA) de `printetreste.com` et
+  `www.printetreste.com` doivent pointer vers l'IP publique que HAProxy
+  écoute en 80/443.
+- Accès pour modifier la configuration HAProxy (dans votre autre dépôt).
 
 ## Déploiement
 
-1. Copier le fichier d'exemple et l'adapter :
+### 1. Ce dépôt : lancer l'émission des certificats
 
-   ```bash
-   cp .env.example .env
-   ```
+```bash
+cp .env.example .env
+# adapter ACME_EMAIL, DOMAINS, éventuellement ACME_HTTP_PORT
+docker compose up -d
+docker compose logs -f certbot
+```
 
-   Renseigner dans `.env` :
-   - `ACME_EMAIL` : votre email (alertes Let's Encrypt) ;
-   - `DOMAIN` : `www.printetreste.com, printetreste.com` ;
-   - `UPSTREAM` : où tourne l'application actuellement (`host:port`).
+Laissez `STAGING=true` pour un premier essai (évite d'épuiser le quota
+Let's Encrypt en cas d'erreur de config), puis repassez à `false` et
+relancez (`docker compose restart certbot`) une fois la chaîne validée.
 
-2. Si votre application tourne déjà dans Docker, connectez son conteneur
-   au réseau `cert-net` créé par ce projet (ou adaptez `UPSTREAM` pour
-   pointer vers son IP/nom sur le réseau qu'elle utilise déjà) :
+### 2. Votre dépôt HAProxy : brancher le challenge et le certificat
 
-   ```bash
-   docker network connect cert-net <nom_du_conteneur_app>
-   ```
+Copiez/adaptez `haproxy/snippet.cfg.example` (fourni ici à titre de
+documentation, à reporter dans la vraie config HAProxy) :
 
-   Si elle tourne hors Docker sur le même serveur, utilisez
-   `UPSTREAM=host.docker.internal:80` (ou l'IP du serveur).
+- une ACL sur le frontend HTTP (80) qui relaie
+  `/.well-known/acme-challenge/*` vers le conteneur `acme-challenge` de
+  ce dépôt (`<IP_DU_SERVEUR_CERT>:8080`) ;
+- le reste du trafic HTTP redirigé en HTTPS (`redirect scheme https`) ;
+- un frontend HTTPS (`bind *:443 ssl crt /etc/haproxy/certs/`) qui
+  charge le(s) `.pem` combiné(s) et continue de relayer vers le backend
+  NGINX existant, inchangé.
 
-3. Démarrer le reverse proxy :
+Tant que le certificat n'a jamais été émis, la ligne `bind *:443 ssl crt`
+n'a rien à charger : commencez par l'étape 1 pour obtenir un premier
+`.pem` dans `./output/`.
 
-   ```bash
-   make up
-   # ou : docker compose up -d
-   ```
+### 3. Synchroniser le certificat vers HAProxy
 
-4. Vérifier les logs (l'émission du certificat peut prendre quelques
-   secondes à l'issue) :
+Le `.pem` combiné est régénéré dans `./output/` à chaque émission ou
+renouvellement (Certbot boucle automatiquement toutes les 12h en interne
+et renouvelle ~30 jours avant expiration). Il faut le pousser vers
+`/etc/haproxy/certs/` sur le serveur HAProxy et recharger HAProxy.
 
-   ```bash
-   make logs
-   ```
+Adaptez `scripts/sync-to-haproxy.sh.example` (hôte, utilisateur SSH,
+chemin) puis automatisez son exécution (cron, ou ajoutez-le comme second
+`--deploy-hook` Certbot) :
 
-5. Tester : `https://www.printetreste.com` doit répondre avec un certificat
-   valide, et `http://www.printetreste.com` doit rediriger vers HTTPS.
+```bash
+cp scripts/sync-to-haproxy.sh.example scripts/sync-to-haproxy.sh
+chmod +x scripts/sync-to-haproxy.sh
+# tester manuellement, puis planifier (ex: cron toutes les nuits)
+```
 
 ## Tester sans consommer le quota Let's Encrypt
 
-Let's Encrypt limite le nombre de certificats délivrés par domaine et par
-semaine. Pour valider votre configuration sans risquer d'atteindre cette
-limite, décommentez la ligne `acme_ca` (environnement de test/staging)
-dans `caddy/Caddyfile` avant un premier déploiement de test, puis
-recommentez-la avant la mise en production réelle.
-
-## Renouvellement des certificats
-
-Aucune action requise : Caddy vérifie et renouvelle automatiquement les
-certificats avant leur expiration (Let's Encrypt délivre des certificats
-valables 90 jours, renouvelés généralement autour du 60ᵉ jour).
+`STAGING=true` dans `.env` utilise l'environnement de test de Let's
+Encrypt (certificat non reconnu par les navigateurs, mais permet de
+valider tout le circuit HAProxy → acme-challenge → Certbot sans risquer
+d'atteindre la limite de certificats par domaine/semaine).
 
 ## Commandes utiles
 
 ```bash
-make up        # démarre le conteneur
-make down       # arrête le conteneur
-make restart    # redémarre Caddy
-make logs       # suit les logs en direct
-make config     # valide la syntaxe du Caddyfile
-make reload     # recharge la config sans coupure
+docker compose up -d              # démarre acme-challenge + certbot
+docker compose logs -f certbot    # suit l'émission/le renouvellement
+docker compose down               # arrête les conteneurs
 ```
 
 ## Structure du dépôt
 
 ```
 .
-├── docker-compose.yml       # définition du conteneur Caddy
-├── .env.example              # variables à copier vers .env
-├── Makefile                  # raccourcis de gestion
-└── caddy/
-    ├── Caddyfile              # config principale (domaine printetreste.com)
-    └── sites/                 # un fichier par domaine additionnel
-        └── example.Caddyfile.example
+├── docker-compose.yml               # conteneurs acme-challenge + certbot
+├── .env.example                      # variables à copier vers .env
+├── scripts/
+│   ├── entrypoint.sh                  # boucle certbot certonly + renew
+│   ├── concat-cert.sh                 # deploy-hook : génère le .pem combiné
+│   └── sync-to-haproxy.sh.example     # exemple de synchro vers HAProxy
+├── haproxy/
+│   └── snippet.cfg.example            # extraits à reporter dans votre config HAProxy
+└── output/                            # .pem générés (ignorés par git)
 ```
