@@ -1,0 +1,41 @@
+# Configuration globale
+{
+	email {$ACME_EMAIL}
+
+	# Pour tester sans consommer le quota (rate limit) de Let's Encrypt,
+	# decommenter la ligne suivante puis la recommenter avant la mise en prod :
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# Site principal : printetreste.com
+# Caddy obtient/renouvelle automatiquement un certificat Let's Encrypt
+# pour chaque domaine liste ici, et redirige tout le trafic HTTP (port 80)
+# vers HTTPS (port 443).
+{$DOMAIN} {
+	encode gzip zstd
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	reverse_proxy {$UPSTREAM} {
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	log {
+		output file /data/logs/printetreste-access.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}
+
+# Pour proteger d'autres domaines/sous-domaines avec leur propre certificat
+# gratuit, ajoutez un fichier `caddy/sites/<nom>.Caddyfile` (voir l'exemple
+# fourni) : il sera importe automatiquement, sans toucher a ce fichier.
+import sites/*.Caddyfile
