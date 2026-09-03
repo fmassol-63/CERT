@@ -1,0 +1,18 @@
+#!/bin/sh
+# Exemple : a adapter avec vos propres identifiants/chemins, puis a lancer
+# apres chaque renouvellement (cron, ou en second deploy-hook Certbot) pour
+# pousser le certificat combine vers le serveur HAProxy et le recharger.
+#
+# Copiez ce fichier en retirant le suffixe ".example" et rendez-le
+# executable : chmod +x scripts/sync-to-haproxy.sh
+
+set -eu
+
+HAPROXY_HOST="haproxy.exemple.local"
+HAPROXY_USER="deploy"
+HAPROXY_CERT_DIR="/etc/haproxy/certs"
+
+rsync -az --chown=root:root ./output/*.pem \
+	"${HAPROXY_USER}@${HAPROXY_HOST}:${HAPROXY_CERT_DIR}/"
+
+ssh "${HAPROXY_USER}@${HAPROXY_HOST}" "sudo systemctl reload haproxy"

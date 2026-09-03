@@ -1,28 +1,37 @@
 services:
-  caddy:
-    image: caddy:2-alpine
-    container_name: cert-caddy
+  # Sert uniquement les fichiers de validation ACME
+  # (/.well-known/acme-challenge/...) que HAProxy doit lui relayer.
+  acme-challenge:
+    image: nginx:alpine
+    container_name: cert-acme-challenge
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    environment:
-      - ACME_EMAIL=${ACME_EMAIL}
-      - DOMAIN=${DOMAIN}
-      - UPSTREAM=${UPSTREAM}
+      - "${ACME_HTTP_PORT:-8080}:80"
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./caddy/sites:/etc/caddy/sites:ro
-      - caddy_data:/data
-      - caddy_config:/config
+      - acme_webroot:/usr/share/nginx/html:ro
     networks:
       - cert-net
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:2019/config/"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
+
+  # Obtient puis renouvelle automatiquement les certificats Let's Encrypt
+  # (methode webroot), et genere un .pem combine (cert+cle) pret a etre
+  # charge par HAProxy.
+  certbot:
+    image: certbot/certbot:latest
+    container_name: cert-certbot
+    restart: unless-stopped
+    entrypoint: ["/scripts/entrypoint.sh"]
+    environment:
+      - DOMAINS=${DOMAINS}
+      - ACME_EMAIL=${ACME_EMAIL}
+      - STAGING=${STAGING:-false}
+    volumes:
+      - acme_webroot:/var/www/acme-challenge
+      - letsencrypt:/etc/letsencrypt
+      - ./scripts/entrypoint.sh:/scripts/entrypoint.sh:ro
+      - ./scripts/concat-cert.sh:/etc/letsencrypt/renewal-hooks/deploy/concat-cert.sh:ro
+      - ./output:/output
+    networks:
+      - cert-net
 
 networks:
   cert-net:
@@ -30,5 +39,5 @@ networks:
     driver: bridge
 
 volumes:
-  caddy_data:
-  caddy_config:
+  acme_webroot:
+  letsencrypt:

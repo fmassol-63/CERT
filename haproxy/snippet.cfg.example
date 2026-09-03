@@ -1,0 +1,30 @@
+# A copier/adapter dans la configuration HAProxy de votre AUTRE depot/serveur.
+# Ce fichier n'est pas charge par ce conteneur : il documente les regles a
+# ajouter cote HAProxy pour brancher les certificats generes ici.
+
+frontend fe_http
+	bind *:80
+
+	# Laisse passer les requetes de validation Let's Encrypt vers le
+	# conteneur acme-challenge de ce depot (port ACME_HTTP_PORT, 8080
+	# par defaut) sur le serveur "CERT".
+	acl is_acme_challenge path_beg /.well-known/acme-challenge/
+	use_backend be_acme_challenge if is_acme_challenge
+
+	# Tout le reste du trafic HTTP est redirige en HTTPS.
+	redirect scheme https code 301 if !is_acme_challenge
+
+backend be_acme_challenge
+	server acme_challenge <IP_DU_SERVEUR_CERT>:8080
+
+frontend fe_https
+	# Le repertoire doit contenir le(s) .pem combine(s) (cert+cle) issus
+	# de ./output sur le serveur "CERT" (voir scripts/sync-to-haproxy.sh.example).
+	# HAProxy charge automatiquement tous les .pem du repertoire.
+	bind *:443 ssl crt /etc/haproxy/certs/
+
+	default_backend be_nginx
+
+# Backend existant vers NGINX : inchange, on continue a relayer en HTTP clair.
+backend be_nginx
+	server nginx1 <IP_OU_NOM_NGINX>:80
