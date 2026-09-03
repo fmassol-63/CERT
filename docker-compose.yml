@@ -1,0 +1,34 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: cert-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      - ACME_EMAIL=${ACME_EMAIL}
+      - DOMAIN=${DOMAIN}
+      - UPSTREAM=${UPSTREAM}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/sites:/etc/caddy/sites:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - cert-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+networks:
+  cert-net:
+    name: cert-net
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

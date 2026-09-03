@@ -1,0 +1,7 @@
+# Exemple : ajout d'un nouveau site avec son propre certificat gratuit.
+# Copiez ce fichier en retirant le suffixe ".example" (ex: mon-site.Caddyfile)
+# puis adaptez le domaine et l'adresse interne de l'application.
+#
+# autre-domaine.com {
+# 	reverse_proxy autre-app:3000
+# }
